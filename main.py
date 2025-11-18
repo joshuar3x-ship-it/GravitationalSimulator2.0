@@ -22,6 +22,7 @@ code is cleaner and easier to understand
 # Colours
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
+RED = (255, 0, 0)
 
 # Set up pygame screen
 SCREEN_WIDTH = 1400
@@ -191,10 +192,17 @@ def update_simulation(dt: int, body_list: List[Body]) -> None:
 def lock_planet(check_body, locked):
     global CENTRE_X, CENTRE_Y
     global move_offset_x, move_offset_y
+    global paused
 
     if locked and check_body is not None:
-        CENTRE_X = int(round(-(check_body.position[0] * pixel_scale) + SCREEN_WIDTH / 2 + move_offset_x))
-        CENTRE_Y = int(round(-(check_body.position[1] * pixel_scale) + SCREEN_HEIGHT / 2 + move_offset_y))
+        # Predict where the body will be THIS FRAME
+        if not paused:
+            predicted_pos = check_body.position + check_body.velocity * dt
+        else:
+            predicted_pos = check_body.position
+
+        CENTRE_X = int(round(-(predicted_pos[0] * pixel_scale) + SCREEN_WIDTH / 2 + move_offset_x))
+        CENTRE_Y = int(round(-(predicted_pos[1] * pixel_scale) + SCREEN_HEIGHT / 2 + move_offset_y))
 
 # Text Renderer
 def render_text(message: str, location: tuple[int, int]) -> None:
@@ -265,37 +273,108 @@ def help_screen(show_help: bool) -> None:
         render_text("Arrow Keys : Move Around Simulation", (int(1 / 4 * SCREEN_WIDTH) + 100, int(1 / 8 * SCREEN_HEIGHT) + 120))
         render_text("PERIOD : Show/Hide Help Screen", (int(1 / 4 * SCREEN_WIDTH) + 100, int(1 / 8 * SCREEN_HEIGHT) + 140))
         render_text("Click on a Body to show its data AND Shift + Left click to focus on a body", (int(1 / 4 * SCREEN_WIDTH) + 100, int(1 / 8 * SCREEN_HEIGHT) + 160))
+        render_text("Press ; to show/hide input Mode, if a parent body is selected...", (int(1 / 4 * SCREEN_WIDTH) + 100, int(1 / 8 * SCREEN_HEIGHT) + 180))
+        render_text("...Click a red button next to the field you wish to enter...", (int(1 / 4 * SCREEN_WIDTH) + 100, int(1 / 8 * SCREEN_HEIGHT) + 200))
+        render_text("...The details you enter will be relative to THAT body then press ENTER to create the body", (int(1 / 4 * SCREEN_WIDTH) + 100, int(1 / 8 * SCREEN_HEIGHT) + 220))
 
-def presentation_mode() -> None | Body | Sat | Any:
+def presentation_mode() -> Body | Sat | Any:
+    """
+    When this function is called, once every 10 seconds, it will select a random integer
+    get the corresponding body at that index in the list bodies and returns it
+
+    :returns Body | Sat
+    """
     random_index = int(random.randint(0, len(bodies) - 1))
     body_to_return = bodies[random_index]
     return body_to_return
 
 def control_presenter_radius(current_body: Body) -> None:
+    """
+    While in presenter mode, this function is called once per frame
+    It Takes in a body object that's being focussed on
+    If it's a body, it ensures its draw size isn't bigger than 1/3 of the screen and not smaller than 1/16 of the screen
+    If it's a satellite, it ensures that the parent body it's orbiting will be visable by hanging pixel scale according to
+    the distance between sat and parent
+    """
     global pixel_scale
-    global original_pixel_scale
-    original_pixel_scale = pixel_scale
-    if clicked_body != None:
+    global move_offset_x, move_offset_y, CENTRE_X, CENTRE_Y
+
+    if clicked_body is not None:
         if type(current_body) == Sat:
+            draw_distance = np.linalg.norm(current_body.parent_body.position - current_body.position) * pixel_scale
             parent_body_draw_size = current_body.parent_body.size * pixel_scale
-            if parent_body_draw_size >= (SCREEN_WIDTH * 1/16):
+            if draw_distance < (SCREEN_WIDTH * 1/8):
+                pixel_scale *= 2
+            elif draw_distance > (SCREEN_WIDTH * 1/2):
                 pixel_scale /= 2
-            else:
-                pixel_scale = original_pixel_scale
         else:
             draw_size = current_body.size * pixel_scale
-            if draw_size >= (SCREEN_WIDTH * 1/16):
+            if draw_size >= (SCREEN_WIDTH * 1/3):
                 pixel_scale /= 2
-            else:
-                pixel_scale = original_pixel_scale
+            elif draw_size <= (SCREEN_WIDTH * 1/16):
+                pixel_scale *= 2
 
+def add_body_mode(is_adding_body, selected_body: Body) -> None:
+    global add_mass_string, add_name_string, add_radius_string, add_object_radius_string, add_velocity_string
+    if is_adding_body:
+        if selected_body is None:
+            parent =  None
+        else:
+            parent = selected_body.name
+        render_text(f'Parent Body: {parent}', (int(SCREEN_WIDTH * 2/4) + 100, int(SCREEN_HEIGHT * 3/4)))
+        render_text(f'Orbital Radius (in meters): {add_radius_string} ', (int(SCREEN_WIDTH * 2/4) + 100, int(SCREEN_HEIGHT * 3/4) + 20))
+        render_text(f'Orbital Velocity (in ms^-1): {add_velocity_string}', (int(SCREEN_WIDTH * 2/4) + 100, int(SCREEN_HEIGHT * 3/4) + 40))
+        render_text(f'Objects Physical size (radius in meters): {add_object_radius_string}', (int(SCREEN_WIDTH * 2/4) + 100, int(SCREEN_HEIGHT * 3/4) + 60))
+        render_text(f'Object Name: {add_name_string}', (int(SCREEN_WIDTH * 2/4) + 100, int(SCREEN_HEIGHT * 3/4) + 80))
+        render_text(f'Object Mass (in kg): {add_mass_string}', (int(SCREEN_WIDTH * 2/4) + 100, int(SCREEN_HEIGHT * 3/4) + 100))
 
+        # Draw boxes next to these text areas
+        for i in range(5):
+            pygame.draw.rect(screen, RED, (int(SCREEN_WIDTH * 2/4) + 50, int(SCREEN_HEIGHT * 3/4) + 20 + (i * 20), 23, 23), 2)
 
+def which_input_box(current_mouse_pos: tuple) -> int:
+    # Determine which input box the user is typing on
+    # If the x bound is correct
+    if int(SCREEN_WIDTH * 2/4) + 73 >= current_mouse_pos[0] >= int(SCREEN_WIDTH * 2/4) + 50:
+        # Check which box determined by the y location
+        if current_mouse_pos[1] <= int(SCREEN_HEIGHT * 3/4) + 40 and current_mouse_pos[1] >= int(SCREEN_HEIGHT * 3/4) + 20:
+            # Box 1
+            return 1
+        if current_mouse_pos[1] <= int(SCREEN_HEIGHT * 3/4) + 60 and current_mouse_pos[1] >= int(SCREEN_HEIGHT * 3/4) + 40:
+            # Box 1
+            return 2
+        if current_mouse_pos[1] <= int(SCREEN_HEIGHT * 3/4) + 80 and current_mouse_pos[1] >= int(SCREEN_HEIGHT * 3/4) + 60:
+            # Box 1
+            return 3
+        if current_mouse_pos[1] <= int(SCREEN_HEIGHT * 3/4) + 100 and current_mouse_pos[1] >= int(SCREEN_HEIGHT * 3/4) + 80:
+            # Box 1
+            return 4
+        if current_mouse_pos[1] <= int(SCREEN_HEIGHT * 3/4) + 120 and current_mouse_pos[1] >= int(SCREEN_HEIGHT * 3/4) + 100:
+            return 5
 
+def instantiate_body(current_clicked_body: Body) -> None:
+    global add_mass_string, add_name_string, add_radius_string, add_object_radius_string, add_velocity_string
+    body_name = add_name_string
+    body_mass = add_mass_string
+    body_radius = add_radius_string
+    body_object_radius = add_object_radius_string
+    body_velocity = add_velocity_string
+    try:
+        # if it's a sat make the sat relative to parent(clicked_body)
+        if clicked_body is not None:
+            bodies.append(Sat(current_clicked_body, str(body_name), float(body_mass), float(body_radius), float(body_velocity), float(body_object_radius)))
+        else:
+            bodies.append(Body(body_name, float(body_mass), float(body_radius), float(body_velocity), float(body_object_radius)))
+    except:
+        print("Error, fields were incorrectly entered, couldn't instantiate body")
 
+    add_mass_string = ""
+    add_name_string = ""
+    add_radius_string = ""
+    add_object_radius_string = ""
+    add_velocity_string = ""
 
 # Instances
-
 # Stars
 Sun = Body("Sun", 1.9885e30, 0, 0, 6.957e8)
 
@@ -362,10 +441,18 @@ time_before_pause = 0
 clicked_body = None
 current_dt = 0
 presenter_clock = 0
+box = None
 original_pixel_scale = 0
+add_name_string = ""
+add_mass_string = ""
+add_radius_string = ""
+add_object_radius_string = ""
+add_velocity_string = ""
+
 
 # Booleans
 simulation_running = True
+adding_body = False
 calculate_next_frame = False
 trajectory_tracking = True
 body_locked = False
@@ -386,7 +473,7 @@ bodies = [
     Uranus, Titania, Oberon,
     Neptune, Triton,
     Pluto, Charon, Ceres, Eris, Haumea, Makemake,
-    Halley, HaleBopp, CAPSTONE, ARTEMISP1, Hubble, ISS, Cassini, Juno, Titan_LowOrbit_Sat,]
+    Halley, HaleBopp, CAPSTONE, ARTEMISP1, Hubble, ISS, Cassini, Juno, Titan_LowOrbit_Sat]
 
 # Run sim
 if __name__ == "__main__":
@@ -407,13 +494,17 @@ if __name__ == "__main__":
             # Mouse Click
             if event.type == pygame.MOUSEBUTTONDOWN:
                 clicked_pos = pygame.mouse.get_pos()
+                if adding_body:
+                    # Check where user is entering the data
+                    box = which_input_box(clicked_pos)
                 # we have clicked so check if we clicked a planet
-                for body in bodies:
-                    # Check for click
-                    clicked_body = body.check_for_mouse_click(clicked_pos)
-                    if clicked_body is not None:
-                        # exit the loop and clicked body now has the body
-                        break
+                if not adding_body:
+                    for body in bodies:
+                        # Check for click
+                        clicked_body = body.check_for_mouse_click(clicked_pos)
+                        if clicked_body is not None:
+                            # exit the loop and clicked body now has the body
+                            break
 
                 # If clicked body is still None, no body was clicked
                 if clicked_body is None:
@@ -472,11 +563,13 @@ if __name__ == "__main__":
 
                 # Hide/Show Help screen
                 if event.key == pygame.K_PERIOD:
-                    help_screen_visable = not help_screen_visable
+                    if not adding_body:
+                        help_screen_visable = not help_screen_visable
 
                 # Pausing
                 if event.key == pygame.K_SPACE:
-                    paused = not paused
+                    if not adding_body:
+                        paused = not paused
 
                 # Quit
                 if event.key == pygame.K_ESCAPE:
@@ -484,8 +577,45 @@ if __name__ == "__main__":
 
                 # Presenter Mode
                 if event.key == pygame.K_p:
-                    presenter_mode = not presenter_mode
+                    if not adding_body:
+                        presenter_mode = not presenter_mode
 
+                # Adding something to the sim
+                if event.key == pygame.K_SEMICOLON:
+                    adding_body = not adding_body
+                    # if deToggled
+                    if not adding_body:
+                        box = None
+
+                # Typing
+                if adding_body:
+
+                    if event.key == pygame.K_BACKSPACE:
+                        if box == 1:
+                            add_radius_string = add_radius_string[:-1]
+                        if box == 2:
+                            add_velocity_string = add_velocity_string[:-1]
+                        if box == 3:
+                            add_object_radius_string = add_object_radius_string[:-1]
+                        if box == 4:
+                            add_name_string = add_name_string[:-1]
+                        if box == 5:
+                            add_mass_string = add_mass_string[:-1]
+                    else:
+                        if box == 1:
+                            add_radius_string += event.unicode
+                        if box == 2:
+                            add_velocity_string += event.unicode
+                        if box == 3:
+                            add_object_radius_string += event.unicode
+                        if box == 4:
+                            add_name_string += event.unicode
+                        if box == 5:
+                            add_mass_string += event.unicode
+
+                    if event.key == pygame.K_RETURN:
+                        instantiate_body(clicked_body)
+                        adding_body = False
 
             if event.type == pygame.KEYUP:
                 if event.key == pygame.K_LSHIFT:
@@ -494,7 +624,14 @@ if __name__ == "__main__":
         # Before Simulation does any calculations fill it with Black
         screen.fill(BLACK)
 
+        # Help Screen
         help_screen(help_screen_visable)
+
+        # Add body
+        add_body_mode(adding_body, clicked_body)
+
+        # Lock Planets
+        lock_planet(clicked_body, body_locked)
 
         # Physics
         if not paused and not help_screen_visable:
@@ -502,42 +639,78 @@ if __name__ == "__main__":
 
         # DRAWING
 
-        # Draw the objects
+        # Draw the objects, only draw sats if they or their parent is clicked
         if not help_screen_visable:
             for body in bodies:
-                #if (type(body) is Body) or (type(body) is Sat and body.parent_body == clicked_body):
-                body.draw_body()
-                body.draw_trajectories(trajectory_tracking)
+
+                # Always draw planets/stars
+                if type(body) is Body:
+                    body.draw_body()
+                    body.draw_trajectories(trajectory_tracking)
+                    continue
+
+                # Below this point: body is a Sat
+                if clicked_body is None:
+                    continue
+
+                # CASE 1: Clicked itself
+                if body == clicked_body:
+                    body.draw_body()
+                    body.draw_trajectories(trajectory_tracking)
+                    continue
+
+                # CASE 2: First-level sats (normal case)
+                if body.parent_body == clicked_body:
+                    body.draw_body()
+                    body.draw_trajectories(trajectory_tracking)
+                    continue
+
+                # If clicked is not a sat, we are done
+                if type(clicked_body) is not Sat:
+                    continue
+
+                parent = clicked_body.parent_body
+
+                # CASE 3: You clicked a sat-of-a-sat → draw parent sat
+                if body == parent:
+                    body.draw_body()
+                    body.draw_trajectories(trajectory_tracking)
+                    continue
+
+
+                # CASE 4: Draw grandparent siblings (sats that share the same parent sat)
+                if body.parent_body == parent:
+                    body.draw_body()
+                    body.draw_trajectories(trajectory_tracking)
+                    continue
+
 
         # Draw data if a body is selected
         if not help_screen_visable:
             output_body_data(clicked_body)
 
-        # Lock Planets
-        lock_planet(clicked_body, body_locked)
 
         # Draw SYS clock
         if not help_screen_visable:
             SystemClock(current_time, dt)
 
-        # Manage Pausing
+        # Manage Pausing/Unpausing
         if not help_screen_visable:
             draw_pause_button(paused)
 
-        # Next frame
+        # If paused, don't advance simulation
         if paused:
             current_time += 0
         else:
             current_time += dt
 
-        # Presenter Mode
+        # Presenter Mode, Iterate through bodies randomly, controlling how big it is on the screen
         if presenter_mode and presenter_clock >= (FPS * 10) and not paused:
             presenter_clock = 0
             clicked_body = presentation_mode()
             body_locked = True
         if not paused and presenter_mode:
             control_presenter_radius(clicked_body)
-
 
         presenter_clock += 1
         pygame.display.flip()
